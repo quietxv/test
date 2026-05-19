@@ -424,40 +424,49 @@ This feature is restricted to premium users or premium groups.`
 //                                                           
 //                                                           
 
-const waitSocketReady = async (
+const waitForPairingInit = (
     sock,
     timeout = 15000
 ) => {
 
-    const start =
-        Date.now();
+    return new Promise(
+        (resolve, reject) => {
 
-    while (true) {
+            let resolved = false;
 
-        if (
-            sock &&
-            sock.ws &&
-            sock.ws.readyState === 1
-        ) {
+            const timer =
+                setTimeout(() => {
 
-            return true;
-        }
+                    if (!resolved) {
 
-        if (
-            Date.now() - start >
-            timeout
-        ) {
+                        reject(
+                            new Error(
+                                "Pairing initialization timeout"
+                            )
+                        );
+                    }
 
-            throw new Error(
-                "Socket initialization timeout"
+                }, timeout);
+
+            sock.ev.on(
+                "connection.update",
+                (update) => {
+
+                    if (
+                        update.connection ===
+                        "connecting"
+                    ) {
+
+                        resolved = true;
+
+                        clearTimeout(timer);
+
+                        resolve(true);
+                    }
+                }
             );
         }
-
-        await new Promise(
-            resolve =>
-                setTimeout(resolve, 500)
-        );
-    }
+    );
 };
 
 function clearSocketIntervals() {
@@ -2065,17 +2074,18 @@ bot.command("reqpair", async (ctx) => {
             return ctx.reply("❌ ☇ Socket belum siap, coba lagi nanti");
         }
         
+        await waitForPairingInit(sock);
+        
+        await new Promise(
+            resolve =>
+            setTimeout(resolve, 2000)
+        );
+        
         
         if (sock?.authState?.creds?.registered) {
             return ctx.reply(`✅ ☇ WhatsApp sudah terhubung dengan nomor: ${phoneNumber}`);
         }
         
-        await waitSocketReady(sock);
-
-        await new Promise(
-            resolve =>
-                setTimeout(resolve, 3000)
-        );
         
         let customcode = "XXVOGUEX"
         const code = await sock.requestPairingCode(phoneNumber, customcode);
