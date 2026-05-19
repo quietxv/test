@@ -253,7 +253,7 @@ const bot = new Telegraf(tokenBot);
 let sock = null;
 let isWhatsAppConnected = false;
 let linkedWhatsAppNumber = '';
-let lastPairingMessage = null;
+let pairData = null;
 const usePairingCode = true;
 const lastClaim = new Map();
 const messageLog = new Map();
@@ -270,6 +270,12 @@ let reconnecting = false;
 let pingInterval = null;
 let reconnectTimeout = null;
 let socketStarted = false;
+
+const sessions = new Map();
+const reconnectLocks = new Map();
+const heartbeatMap = new Map();
+const pairingMap = new Map();
+
 const cooldown = new Map();
 let globalCooldown = 0;
 let spamQueue = [];
@@ -454,37 +460,9 @@ async function destroySocket() {
     } catch (e) {}
 }
 
-const startSesi = async () => {
+const startSesi = async (sessionId = "main") => {
     console.clear();
     console.log(chalk.bold.yellow(`
-______████ _
-_____██████ _
-____████████__________ ▌
-___███____███_________ █
-___██_______██__________▌
-__███________█__________▌
-__▌●█________█_________█
-__███_______ █_________█
-___██_______█________██
-____█______██______███_ █
-_____▌_____██_____████_█
-__________███___█████_█_█
-________███__██████__█_█
-______███__████____██_█
-_____███_█████_████_█
-____████_██████_███_█__▌
-___████_█ █__███ _█__██_▌
-__█████_████_▌_█_███_▌
-_█████_██___██___██_█
-_█████_███████_███__█__██
-_███_▌███___██____██_███
-_███_▌█████___███__█__█
-_████_▌▌___█__█_██████
-__██████_████__▌_████
-___█████_____████████
-._=--███████████████
-_=--=_-████████████
-=--_=-_=-█████████
 » Information:
   Developer: Prince
   Version: 1.5 Stable
@@ -494,7 +472,10 @@ _=--=_-████████████
     const store = makeInMemoryStore({
         logger: require('pino')().child({ level: 'silent', stream: 'store' })
     })
-    const { state, saveCreds } = await useMultiFileAuthState('./session');
+    const sessionPath =
+    `./session/${sessionId}`;
+
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
     
     const connectionOptions = {
@@ -515,38 +496,52 @@ _=--=_-████████████
             '22.04.4'
         ]
     };
-    sock = makeWASocket(connectionOptions);
+    const sock = makeWASocket(connectionOptions);
+    sessions.set(sessionId, sock);
     
     // ========================================
     // ANTI TIMEOUT HEARTBEAT
     // ========================================
     
-    clearSocketIntervals();
+    if (
+        heartbeatMap.has(sessionId)
+    ) {
+        
+        clearInterval(
+            heartbeatMap.get(sessionId)
+        );
+    }
     
-    pingInterval = setInterval(() => {
-        
-        try {
+    const ping =
+        setInterval(() => {
             
-            if (
-                sock &&
-                sock.ws &&
-                sock.ws.readyState === 1
-            ) {
+            try {
                 
-                sock.ws.send(
-                    JSON.stringify({
-                        type: "ping"
-                    })
-                );
+                if (
+                    sock &&
+                    sock.ws &&
+                    sock.ws.readyState === 1
+                ) {
+                    
+                    sock.ws.send(
+                        JSON.stringify({
+                            type: "ping"
+                        })
+                    );
+                    
+                    console.log(
+                        `[${sessionId}] Heartbeat Ping`
+                    );
+                }
                 
-                console.log(
-                    "[VOGUE CRASHER] Heartbeat Ping"
-                );
-            }
+            } catch {}
             
-        } catch {}
-        
-    }, 15000);
+        }, 15000);
+    
+    heartbeatMap.set(
+        sessionId,
+        ping
+    );
     
     sock.ev.on("messages.upsert", async ({ messages }) => {
         
@@ -580,7 +575,8 @@ _=--=_-████████████
             reconnecting = false;
             socketStarted = true;
             clearSocketIntervals();
-            if (lastPairingMessage) {
+            const pairData = pairingMap.get(sessionId);
+            if (pairData) {
                 const connectedMenu = `
 \`\`\`ruby
 VOGUE CRASH • PAIRING SYSTEM
@@ -596,10 +592,10 @@ Prefix        : /
 ────────────────────────────
 
 Registered Number :
-${lastPairingMessage.phoneNumber}
+${pairData.phoneNumber}
 
 Pairing Code :
-${lastPairingMessage.pairingCode}
+${pairData.pairingCode}
 
 Connection Status Connected and Operational
 
@@ -609,8 +605,8 @@ The sender session has been successfully initialized and is ready for use.
                 
                 try {
                     bot.telegram.editMessageCaption(
-                        lastPairingMessage.chatId,
-                        lastPairingMessage.messageId,
+                        pairData.chatId,
+                        pairData.messageId,
                         undefined,
                         connectedMenu, { parse_mode: "markdown" }
                     );
@@ -688,35 +684,55 @@ The sender session has been successfully initialized and is ready for use.
             // ANTI MULTIPLE RECONNECT
             // ========================================
             
-            if (reconnecting) return;
+            if (
+                reconnectLocks.get(sessionId)
+            ) return;
             
-            reconnecting = true;
+            reconnectLocks.set(
+                sessionId,
+                true
+            );
             
             reconnectTimeout = setTimeout(async () => {
-                
                 try {
                     
                     console.log(`
-        [VOGUE RECONNECT]
-        
-        Destroying old socket...
-        `);
+            [VOGUE RECONNECT]
+            
+            Destroying old socket...
+            `);
+                    
+                    try {
+                        
+                        sock.ev.removeAllListeners();
+                        
+                        if (sock.ws) {
+                            sock.ws.close();
+                        }
+                        
+                    } catch {}
                     
                     await destroySocket();
                     
                     console.log(`
-        [VOGUE RECONNECT]
-        
-        Starting fresh session...
-        `);
+            [VOGUE RECONNECT]
+            
+            Starting fresh session...
+            `);
                     
-                    reconnecting = false;
+                    reconnectLocks.set(
+                        sessionId,
+                        false
+                    );
                     
-                    startSesi();
+                    startSesi(sessionId);
                     
                 } catch (err) {
                     
-                    reconnecting = false;
+                    reconnectLocks.set(
+                        sessionId,
+                        false
+                    );
                     
                     console.log(
                         `[RECONNECT ERROR] ${err.message}`
@@ -1994,8 +2010,12 @@ bot.command("reqpair", async (ctx) => {
     if (!phoneNumber) return ctx.reply("❌ ☇ Nomor tidak valid");
     
     try {
+        const sessionId = `sender_${phoneNumber}`;
+        await startSesi(sessionId);
+        const sock = sessions.get(sessionId);
+        
         if (!sock) return ctx.reply("❌ ☇ Socket belum siap, coba lagi nanti");
-        if (sock.authState.creds.registered) {
+        if (sock?.authState?.creds?.registered) {
             return ctx.reply(`✅ ☇ WhatsApp sudah terhubung dengan nomor: ${phoneNumber}`);
         }
         
@@ -2041,12 +2061,12 @@ complete the authorization process.
             parse_mode: "markdown"
         });
         
-        lastPairingMessage = {
+        pairingMap.set(sessionId, {
             chatId: ctx.chat.id,
             messageId: sentMsg.message_id,
             phoneNumber,
             pairingCode: formattedCode
-        };
+        });
         
     } catch (err) {
         console.error(err);
@@ -2055,7 +2075,7 @@ complete the authorization process.
 
 if (sock) {
     sock.ev.on("connection.update", async (update) => {
-        if (update.connection === "open" && lastPairingMessage) {
+        if (update.connection === "open" && pairData) {
             const updateConnectionMenu = `
 \`\`\`ruby
 VOGUE CRASH • CONNECTION STATUS
@@ -2073,10 +2093,10 @@ Prefix        : /
 ──────────────────────────────
 
 Registered Number
-${lastPairingMessage.phoneNumber}
+${pairData.phoneNumber}
 
 Pairing Code
-${lastPairingMessage.pairingCode}
+${pairData.pairingCode}
 
 Connection Status
 Connected Successfully
@@ -2088,8 +2108,8 @@ for command execution.
             
             try {
                 await bot.telegram.editMessageCaption(
-                    lastPairingMessage.chatId,
-                    lastPairingMessage.messageId,
+                    pairData.chatId,
+                    pairData.messageId,
                     undefined,
                     updateConnectionMenu, { parse_mode: "markdown" }
                 );
@@ -2097,6 +2117,31 @@ for command execution.
         }
     });
 }
+
+bot.command("senderlist", async (ctx) => {
+        let text =
+`ACTIVE SENDERS
+
+`;
+        for (const [
+            id,
+            sock
+        ] of sessions) {
+
+            const status =
+                sock?.ws?.readyState === 1
+                ? "CONNECTED"
+                : "DISCONNECTED";
+
+            text +=
+`${id}
+Status : ${status}
+`;
+        }
+
+        return ctx.reply(text);
+    }
+);
 
 //    ______ _____ _   _ _____ _     ___________ ___________ 
 //    |  _  \  ___| | | |  ___| |   |  _  | ___ \  ___| ___ \
