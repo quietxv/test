@@ -424,6 +424,56 @@ This feature is restricted to premium users or premium groups.`
 //                                                           
 //                                                           
 
+const waitForConnectionOpen = (
+    sock,
+    timeout = 30000
+) => {
+
+    return new Promise(
+        (resolve, reject) => {
+
+            const timer =
+                setTimeout(() => {
+
+                    reject(
+                        new Error(
+                            "Socket connection timeout"
+                        )
+                    );
+
+                }, timeout);
+
+            sock.ev.on(
+                "connection.update",
+                (update) => {
+
+                    if (
+                        update.connection === "open"
+                    ) {
+
+                        clearTimeout(timer);
+
+                        resolve(true);
+                    }
+
+                    if (
+                        update.connection === "close"
+                    ) {
+
+                        clearTimeout(timer);
+
+                        reject(
+                            new Error(
+                                "Socket closed before pairing"
+                            )
+                        );
+                    }
+                }
+            );
+        }
+    );
+};
+
 function clearSocketIntervals() {
     
     if (pingInterval) {
@@ -656,9 +706,19 @@ The sender session has been successfully initialized and is ready for use.
             
             const statusCode =
                 lastDisconnect?.error?.output?.statusCode;
+             
+            if (statusCode === 428) {
+
+                console.log(
+            `[${sessionId}]
+            Socket not ready yet`
+                );
+                return;
+            }
             
             const shouldReconnect =
-                statusCode !== DisconnectReason.loggedOut;
+                statusCode !== DisconnectReason.loggedOut &&
+                statusCode !== 401;
             
             console.log(
                 chalk.red(`
@@ -2012,9 +2072,16 @@ bot.command("reqpair", async (ctx) => {
     try {
         const sessionId = `sender_${phoneNumber}`;
         await startSesi(sessionId);
-        const sock = sessions.get(sessionId);
+
+        const sock =
+            sessions.get(sessionId);
         
-        if (!sock) return ctx.reply("❌ ☇ Socket belum siap, coba lagi nanti");
+        if (!sock) {
+            return ctx.reply("❌ ☇ Socket belum siap, coba lagi nanti");
+        }
+        
+        await waitForConnectionOpen(sock);
+        
         if (sock?.authState?.creds?.registered) {
             return ctx.reply(`✅ ☇ WhatsApp sudah terhubung dengan nomor: ${phoneNumber}`);
         }
