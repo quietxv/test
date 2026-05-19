@@ -511,7 +511,6 @@ async function destroySocket() {
 }
 
 const startSesi = async (sessionId = "main") => {
-    console.clear();
     console.log(chalk.bold.yellow(`
 » Information:
   Developer: Prince
